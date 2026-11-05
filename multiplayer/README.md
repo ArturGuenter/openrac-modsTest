@@ -239,6 +239,8 @@ DATA reaches the host only, the host's goes to everyone or to one), a kind byte 
 | 21 SCENE_STATE | a member to the host | play i32, sequence u16, state u8 (0 still to play, 1 playing, 2 out) | where a member is with the host's scene of that sequence, at each change and once a second; the host waits for those of its newest scene only |
 | 22 CLAIM | a member | level i8, id u16 (a placed bolt's key; 0x8000 \| a net id for one the host dropped) | its Ratchet collected that bolt (its game added nothing): the host's first claim of a bolt still there gets BOLTS and the bolt's end everywhere (DESPAWN or KILLED); any other, nothing |
 | 23 PROGRESS | a member to the host; the host to all | items u8 count + a byte each, gold bolts u8 count + a byte each (level x 4 + its number), planets u8 count + a byte each (non-zero had) | a member: what its game has, at each change and every 5 s; the host: what the party has (its own game's, given what the members have), likewise and at each member that comes. Each game is given what it lacks; nothing is taken |
+| 24 TAKEN | the host | level i8, id u16 (as CLAIM), player i32 | who took a bolt, so its own pickup flight plays in every game before it goes |
+| 25 RESYNC | a member | level i8, load u32 | its game loaded the level again (for example after its hero died): the host records that member's load and sends DEAD plus every active SPAWN again |
 | 64 LINK | a member | ping i32 (ms, -1 not known), udp u8 | its link to the server, every 2 seconds |
 | 65 LINKS | the host, to all | count u8, then id i32 + ping i32 + udp u8 each | every member's link (the host's own among them), for the pause menu's Multiplayer page |
 

@@ -69,6 +69,9 @@
  *   17 BROKE   level i8, key u16                                  a member broke a crate;
  *   22 CLAIM   level i8, id u16 (a key; 0x8000 | a net id)        a member collected a bolt;
  *   24 TAKEN   level i8, id u16 (as CLAIM's), player i32          the host: who took a bolt.
+ *   25 RESYNC  level i8, load u32                                  a member: its level loaded
+ *              again; the host sends DEAD and every active SPAWN again once it sees the member
+ *              in that level. A death/respawn reloads only the member's game, not the host's.
  */
 #ifndef MULTIPLAYER_WORLD_H
 #define MULTIPLAYER_WORLD_H
@@ -102,7 +105,8 @@ enum class WorldKind : std::uint8_t {
     kDead = 16,
     kBroke = 17,
     kClaim = 22,
-    kTaken = 24
+    kTaken = 24,
+    kResync = 25
 };
 
 /* The gate's moments (the SDK's OPENRAC_MOBY_BEFORE and _AFTER). */
@@ -291,6 +295,11 @@ private:
     struct Member {
         int level = -1;
         std::uint32_t told_load = 0;  // the host's load it was given DEAD and SPAWNs for
+        /* Its own last load reported by RESYNC. A respawn changes this without changing the host's
+         * load, and asks for the world again. */
+        std::uint32_t own_load = 0;
+        bool heard_own_load = false;
+        bool needs_world = true;
         std::uint64_t world_ms = 0;
         std::map<std::uint16_t, Sent> sent;
         int bolts = 0;
@@ -405,6 +414,9 @@ private:
     /* Member: whether the host's copy of each is hidden, and when the host last sent each. */
     std::map<std::uint16_t, bool> hidden_;
     std::map<std::uint16_t, std::uint64_t> host_ms_;
+    /* Member: its game loaded again; ask the host for DEAD and active SPAWNs once it is back in
+     * the host's level. */
+    bool resync_pending_ = false;
     bool despawn_on_ = false;
     DespawnLog despawn_;
     Trace* trace_ = nullptr;
