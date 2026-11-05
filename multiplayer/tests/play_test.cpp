@@ -1328,6 +1328,64 @@ void the_world_is_the_hosts() {
     CHECK(member.game.moby_slot(2) == 2 && member.game.moby_slot(1) == -1);
 }
 
+// A member dying reloads only its own copy of the level. It asks for the host's world again, so
+// enemies already dead there do not reappear only for it, and the host's live spawned enemies are
+// made in the new load again.
+void a_respawn_gets_the_hosts_world_again() {
+    Player host(1), member(2);
+    const std::vector<mp::Member> both = {{1, "P1"}, {2, "P2"}};
+    host.session.handle(info(both));
+    member.session.handle(info(both));
+    host.coop.choose({}, "New game");
+    CHECK(start_ready(host));
+    route({&host, &member});
+    tick({&host, &member}, 16);
+
+    const std::uint32_t runs = mp::kMobyUpdates | mp::kMobyPlaced;
+    for (Player* p : {&host, &member}) {
+        p->game.now = {mp::kPhasePlaying, 0, 2};
+        p->game.level = {moby(0, 0, 300, runs | mp::kMobyCreature, 10.0f),
+                         moby(1, 1, 77, mp::kMobyPlaced, 30.0f)};
+    }
+    // A live enemy made by the host must be made again after the member's local reload too.
+    host.game.level.push_back(moby(300, -1, 301, mp::kMobyUpdates | mp::kMobyCreature, 12.0f));
+    const auto spawned_enemies = [](const FakeGame& game) {
+        return std::count_if(game.level.begin(), game.level.end(), [](const mp::MobyState& m) {
+            return m.oclass == 301 && (m.flags & mp::kMobyDead) == 0;
+        });
+    };
+    for (int i = 0; i < 20; ++i) {
+        tick({&host, &member}, 50);
+    }
+    CHECK(member.game.moby_slot(0) == 0 && spawned_enemies(member.game) == 1);
+
+    // The host kills the placed enemy; it is gone in both games.
+    host.game.die(0);
+    tick({&host, &member}, 50);
+    tick({&host, &member}, 50);
+    CHECK(host.game.moby_slot(0) == -1 && member.game.moby_slot(0) == -1);
+
+    // The member dies: its game loads the same level afresh, recreating the placed enemy and
+    // dropping every moby the mod spawned. RESYNC makes the host send DEAD and SPAWN again.
+    member.game.now.loads = 3;
+    member.game.drives.clear();
+    member.game.level = {moby(0, 0, 300, runs | mp::kMobyCreature, 10.0f),
+                         moby(1, 1, 77, mp::kMobyPlaced, 30.0f)};
+    tick({&host, &member}, 50);  // member -> host: RESYNC
+    tick({&host, &member}, 50);  // host -> member: DEAD and active SPAWN
+
+    CHECK(member.game.moby_slot(0) == -1);
+    CHECK(spawned_enemies(member.game) == 1);
+    CHECK(std::count(member.game.world_calls.begin(), member.game.world_calls.end(), "spawn 301") == 2);
+
+    // The request is once per load; ordinary ticks do not duplicate the host's spawned enemy.
+    for (int i = 0; i < 5; ++i) {
+        tick({&host, &member}, 50);
+    }
+    CHECK(spawned_enemies(member.game) == 1);
+    CHECK(std::count(member.game.world_calls.begin(), member.game.world_calls.end(), "spawn 301") == 2);
+}
+
 // An enemy the host's game hides (its update: one waiting to appear) is hidden in the member's,
 // whose game does not run that update, and shown with the host's; one the host has not sent is held
 // as it is (a missing snapshot changes nothing).
@@ -3631,6 +3689,7 @@ int main() {
     a_member_out_of_the_game_asks_for_it();
     world_bytes();
     the_world_is_the_hosts();
+    a_respawn_gets_the_hosts_world_again();
     the_hosts_hidden_mobys_are_hidden_here();
     the_despawn_log_says_who_and_why();
     the_world_logs_its_despawns();

@@ -162,6 +162,7 @@ void World::reset() {
     loot_.clear();
     hidden_.clear();
     host_ms_.clear();
+    resync_pending_ = false;
     despawn_.reset();
     traced_.in_range.clear();
     traced_.driven.clear();
@@ -241,9 +242,24 @@ void World::tick_world(std::uint64_t now) {
         reset();
         loads_ = status.loads;
         level_ = status.level;
+        // The host's load does not change when this member dies and reloads a checkpoint. Ask for
+        // its authoritative dead mobys and active spawns again once this game is back in the level.
+        resync_pending_ = !session_.is_host() && coop_.playing();
     }
 
     hosting_ = session_.is_host() && coop_.playing() && in_level(status.phase);
+
+    if (resync_pending_ && !session_.is_host() && coop_.playing() && in_level(status.phase)
+        && status.level == coop_.host_level()) {
+        Writer w;
+        w.u8(static_cast<std::uint8_t>(WorldKind::kResync))
+            .u8(static_cast<std::uint8_t>(static_cast<std::int8_t>(status.level)))
+            .i32(static_cast<std::int32_t>(status.loads));
+        session_.send_data(session_.host(), w.bytes());
+        trace_line("msg", "sent RESYNC to host level " + std::to_string(status.level) + " load "
+                              + std::to_string(status.loads));
+        resync_pending_ = false;
+    }
 
     // This tick's mobys. A tick the game lists none of (a level loading, a menu that has its own)
     // changes nothing: what is known holds, and nothing is ever taken for dead by its absence.
@@ -838,13 +854,14 @@ void World::tick_host(std::uint64_t now, const GameStatus& status) {
         // Elsewhere (or nothing heard): told again when it comes.
         if (!coop_.latest(who.id, at) || at.level != status.level) {
             m.level = at.level;
-            m.told_load = 0;
+            m.needs_world = true;
             continue;
         }
 
         m.level = at.level;
 
-        if (m.told_load != loads_) {
+        if (m.needs_world || m.told_load != loads_) {
+            m.needs_world = false;
             m.told_load = loads_;
             m.sent.clear();
             send_dead(who.id, level_);
@@ -1062,6 +1079,32 @@ void World::handle(std::int32_t sender, const Bytes& bytes) {
 
         if (r.ok() && session_.is_host()) {
             claim(sender, level, id);
+        }
+
+        return;
+    }
+
+    // A member's game loaded this level again (most often after its hero died). Its local level
+    // recreated placed mobys and forgot mod-spawned ones, while the host's load stayed unchanged.
+    // Mark it for a full DEAD + active SPAWNs refresh when its next pose says it is back here.
+    if (kind == WorldKind::kResync) {
+        const int level = static_cast<std::int8_t>(r.u8());
+        const auto load = static_cast<std::uint32_t>(r.i32());
+        const bool member = std::any_of(session_.members().begin(), session_.members().end(),
+                                        [&](const mp::Member& x) {
+                                            return x.id == sender && x.id != session_.id();
+                                        });
+        trace_line("msg", "received RESYNC from " + std::to_string(sender) + " level "
+                              + std::to_string(level) + " load " + std::to_string(load));
+
+        if (r.ok() && session_.is_host() && member) {
+            Member& state = members_[sender];
+
+            if (!state.heard_own_load || state.own_load != load) {
+                state.own_load = load;
+                state.heard_own_load = true;
+                state.needs_world = true;
+            }
         }
 
         return;
